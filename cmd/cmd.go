@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -35,14 +34,6 @@ var rootCmd = &cobra.Command{
 		if err := pm.List(profiles, conns); err != nil {
 			color.Yellow("Failed to list profiles: %v", err)
 			return
-		}
-
-		fmt.Println()
-
-		// Prompt user to select a profile
-		var options []string
-		for _, profile := range profiles {
-			options = append(options, profile.Server)
 		}
 
 		var id string
@@ -122,9 +113,10 @@ var rootCmd = &cobra.Command{
 				case "connected":
 					color.Green("Successfully connected to %s!", targetProfile.Server)
 					break Loop
-				case "":
-					color.Red("Failed to connect to %s!", targetProfile.Server)
-					break Loop
+				case "connecting", "":
+					// Do nothing
+				default:
+					color.Red("Failed to connect to %s: %s", targetProfile.Server, status)
 				}
 				time.Sleep(500 * time.Millisecond)
 			}

@@ -1,9 +1,11 @@
 package pritunl
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,6 +13,8 @@ import (
 
 	"github.com/cghdev/gotunl/pkg/gotunl"
 	"github.com/fatih/color"
+	"github.com/samber/lo"
+	"github.com/xlzd/gotp"
 )
 
 var (
@@ -19,24 +23,27 @@ var (
 )
 
 type PritunlManager struct {
-	gotunl  *gotunl.Gotunl
-	servers map[string]*ServerInfo
+	gotunl   *gotunl.Gotunl
+	profiles map[string]*Profile
 }
 
 func GetPritunlManager() *PritunlManager {
 	once.Do(func() {
 		instance = &PritunlManager{
-			gotunl: gotunl.New(),
+			gotunl:   gotunl.New(),
+			profiles: make(map[string]*Profile),
 		}
 	})
 	return instance
 }
 
 type Profile struct {
-	ID     string
-	Path   string
-	Server string
-	User   string
+	ID          string
+	Path        string
+	Server      string
+	User        string
+	IsAutoStart bool
+	IsSystem    bool
 }
 
 type Conf struct {
@@ -60,10 +67,8 @@ type ServerInfo struct {
 	ConnectionStarted time.Time
 }
 
-// Profiles retrieves the list of available VPN profiles and sorts them by server order
+// Profiles retrieves the list of available VPN profiles
 func (pm *PritunlManager) Profiles() ([]Profile, error) {
-	var profiles []Profile
-
 	for id, profile := range pm.gotunl.Profiles {
 		var conf Conf
 		err := json.Unmarshal([]byte(profile.Conf), &conf)
@@ -71,15 +76,67 @@ func (pm *PritunlManager) Profiles() ([]Profile, error) {
 			return nil, fmt.Errorf("failed to unmarshal profile config for ID %s: %v", id, err)
 		}
 
-		profiles = append(profiles, Profile{
+		pm.profiles[id] = &Profile{
 			ID:     id,
 			Path:   profile.Path,
 			Server: conf.Server,
 			User:   conf.User,
-		})
+		}
 	}
 
-	return profiles, nil
+	pm.SetSystemProfiles()
+
+	return lo.MapToSlice(pm.profiles, func(k string, v *Profile) Profile {
+		return *v
+	}), nil
+}
+
+func (pm *PritunlManager) SetSystemProfiles() error {
+	// Command to list profiles
+	cmd := exec.Command("/Applications/Pritunl.app/Contents/Resources/pritunl-client", "list")
+
+	// Capture output
+	var out bytes.Buffer
+	cmd.Stdout = &out
+
+	// Run the command
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("error running pritunl-client: %v", err)
+	}
+
+	// Parse the output
+	lines := strings.Split(out.String(), "\n")
+	if len(lines) < 3 {
+		return fmt.Errorf("unexpected output format")
+	}
+
+	for _, line := range lines[3:] {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "+") {
+			continue // Skip empty lines and borders
+		}
+
+		// Split the row into columns
+		fields := strings.SplitN(line, "|", 8) // Split into max 8 columns
+		if len(fields) < 8 {
+			continue // Skip invalid rows
+		}
+		id := strings.TrimSpace(fields[1])
+		parts := strings.SplitN(fields[2], " (", 2) // Split into user and server
+		user := strings.TrimSpace(parts[0])
+		server := strings.TrimSuffix(strings.TrimSpace(parts[1]), ")")
+		user = strings.TrimSpace(user)
+		server = strings.TrimSuffix(strings.TrimSpace(server), ")")
+
+		pm.profiles[id] = &Profile{
+			ID:       id,
+			Server:   server,
+			User:     user,
+			IsSystem: true,
+		}
+	}
+
+	return nil
 }
 
 // Connections retrieves the current active connections
@@ -103,37 +160,32 @@ func (pm *PritunlManager) Connect(id string) error {
 		return err
 	}
 
-	isSucess := true
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				isSucess = false
-			}
-		}()
-		pm.gotunl.ConnectProfile(id, "pritunl", config.OTP())
-	}()
+	totp := gotp.NewDefaultTOTP(config.key)
+	authenticatorCode := id + totp.Now()
 
-	if !isSucess {
-		return errors.New("failed to connect to VPN")
+	profile := pm.profiles[id]
+	if profile == nil {
+		return fmt.Errorf("profile with ID %s not found", id)
 	}
+
+	if profile.IsSystem {
+		cmd := exec.Command("/Applications/Pritunl.app/Contents/Resources/pritunl-client", "start", id, "-p", authenticatorCode)
+
+		// Run the command
+		err := cmd.Run()
+		if err != nil {
+			return fmt.Errorf("error running pritunl-client: %v", err)
+		}
+	} else {
+		pm.gotunl.ConnectProfile(id, pm.profiles[id].User, authenticatorCode)
+	}
+
 	return nil
 }
 
 // Disconnect disconnects from a VPN profile by its ID
 func (pm *PritunlManager) Disconnect(id string) error {
-	isSucess := true
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				isSucess = false
-			}
-		}()
-		pm.gotunl.DisconnectProfile(id)
-	}()
-
-	if !isSucess {
-		return errors.New("failed to disconnect from VPN")
-	}
+	pm.gotunl.DisconnectProfile(id)
 	return nil
 }
 

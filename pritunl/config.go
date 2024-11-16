@@ -7,7 +7,6 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/fatih/color"
 	"github.com/spf13/viper"
-	"github.com/xlzd/gotp"
 )
 
 const (
@@ -17,17 +16,22 @@ const (
 type config struct {
 	ID  string
 	key string
-	pin string
-}
-
-func (c *config) OTP() string {
-	totp := gotp.NewDefaultTOTP(c.key)
-	return c.pin + totp.Now()
 }
 
 type answer struct {
-	Key string
-	Pin string
+	Key string `survey:"key"`
+}
+
+func init() {
+	// check if config folder exists
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, configFilePath)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := os.MkdirAll(path, 0755); err != nil {
+			color.Red("Error creating config folder: %v", err)
+			os.Exit(1)
+		}
+	}
 }
 
 func initConfig(id string) {
@@ -40,17 +44,19 @@ func initConfig(id string) {
 func getConfig(id string) (*config, error) {
 	initConfig(id)
 
+	// check if config file exists
+	if _, err := os.Stat(viper.ConfigFileUsed()); os.IsNotExist(err) {
+		color.Yellow("Config not found. Please configure TOTP.")
+		return configureOTP(id)
+	}
+
 	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			color.Yellow("Config not found. Please configure OTP.")
-			return configureOTP(id)
-		}
+		return nil, err
 	}
 
 	return &config{
 		ID:  id,
 		key: viper.GetString("key"),
-		pin: viper.GetString("pin"),
 	}, nil
 }
 
@@ -62,11 +68,7 @@ func getAnswer() (*answer, error) {
 	var qs = []*survey.Question{
 		{
 			Name:   "key",
-			Prompt: &survey.Password{Message: "Enter OTP key"},
-		},
-		{
-			Name:   "pin",
-			Prompt: &survey.Password{Message: "Enter Pin"},
+			Prompt: &survey.Password{Message: "Enter TOTP key"},
 		},
 	}
 	var ans answer
@@ -85,7 +87,6 @@ func configureOTP(id string) (*config, error) {
 	}
 
 	viper.Set("key", ans.Key)
-	viper.Set("pin", ans.Pin)
 	if err := viper.WriteConfig(); err != nil {
 		return nil, err
 	}
@@ -94,6 +95,5 @@ func configureOTP(id string) (*config, error) {
 	return &config{
 		ID:  id,
 		key: ans.Key,
-		pin: ans.Pin,
 	}, nil
 }
