@@ -11,27 +11,34 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Global flag to specify the VPN tool
+var vpnTool string
+
 var rootCmd = &cobra.Command{
 	Use:   "autovpn",
-	Short: "Automatically connect to a Pritunl VPN server",
+	Short: "Automatically connect to a VPN server",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Create a new Pritunl instance
-		pm := pritunl.GetPritunlManager()
+		// Get the appropriate VPN manager based on the tool specified
+		vpnManager, err := GetVPNManager(vpnTool)
+		if err != nil {
+			color.Red("Error initializing VPN manager: %v", err)
+			return
+		}
 
 		// Fetch profiles and connections
-		profiles, err := pm.Profiles()
+		profiles, err := vpnManager.Profiles()
 		if err != nil {
 			color.Red("Failed to fetch profiles: %v", err)
 			return
 		}
-		conns, err := pm.Connections()
+		connections, err := vpnManager.Connections()
 		if err != nil {
 			color.Red("Failed to fetch connections: %v", err)
 			return
 		}
 
 		// List profiles and connections
-		if err := pm.List(profiles, conns); err != nil {
+		if err := vpnManager.List(profiles, connections); err != nil {
 			color.Yellow("Failed to list profiles: %v", err)
 			return
 		}
@@ -56,7 +63,7 @@ var rootCmd = &cobra.Command{
 		for i, profile := range profiles {
 			if strconv.Itoa(i+1) == id || strings.ToUpper(id) == profile.Server {
 				targetProfile = profile
-				isActionDisconnect = conns[profile.ID].Status == "connected"
+				isActionDisconnect = connections[profile.ID].Status == "connected"
 				break
 			}
 		}
@@ -69,7 +76,7 @@ var rootCmd = &cobra.Command{
 		// Perform disconnect action if profile is connected
 		if isActionDisconnect {
 			color.White("Disconnecting from %s...", targetProfile.Server)
-			if err := pm.Disconnect(targetProfile.ID); err != nil {
+			if err := vpnManager.Disconnect(targetProfile.ID); err != nil {
 				color.Red("Failed to disconnect: %v", err)
 			}
 			return
@@ -77,9 +84,9 @@ var rootCmd = &cobra.Command{
 
 		// Disconnect all active connections before connecting to the target profile
 		for _, profile := range profiles {
-			if _, ok := conns[profile.ID]; ok {
+			if _, ok := connections[profile.ID]; ok {
 				color.White("Disconnecting from %s...", profile.Server)
-				if err := pm.Disconnect(profile.ID); err != nil {
+				if err := vpnManager.Disconnect(profile.ID); err != nil {
 					color.Red("Failed to disconnect: %v", err)
 				}
 				time.Sleep(time.Second)
@@ -88,7 +95,7 @@ var rootCmd = &cobra.Command{
 
 		// Connect to the target profile
 		color.Yellow("Connecting to %s...", targetProfile.Server)
-		if err := pm.Connect(targetProfile.ID); err != nil {
+		if err := vpnManager.Connect(targetProfile.ID); err != nil {
 			color.Red("Failed to connect: %v", err)
 			return
 		}
@@ -103,7 +110,7 @@ var rootCmd = &cobra.Command{
 				color.Red("Connection to %s timed out!", targetProfile.Server)
 				break Loop
 			default:
-				connections, err := pm.Connections()
+				connections, err := vpnManager.Connections()
 				status := connections[targetProfile.ID].Status
 				if err != nil {
 					color.Red("Failed to fetch connection status: %v", err)
@@ -128,6 +135,9 @@ func init() {
 	// Disable default help and completion commands
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 	rootCmd.SetHelpCommand(&cobra.Command{Hidden: true})
+
+	// Add flag for specifying VPN tool
+	rootCmd.PersistentFlags().StringVarP(&vpnTool, "tool", "t", "pritunl", "Specify the VPN tool to use (e.g., pritunl)")
 }
 
 // Execute runs the root command
